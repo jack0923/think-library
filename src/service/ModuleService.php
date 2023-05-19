@@ -22,6 +22,11 @@ use think\admin\extend\HttpExtend;
 use think\admin\extend\Parsedown;
 use think\admin\Library;
 use think\admin\Service;
+use think\facade\Cache;
+
+const CACHE_CLOUD_UPDATE_TIME = 300;
+const CACHE_CLOUD_NEWST_FILES = 'cloud_newst_files';
+const CACHE_UPDATE_DIFF_CONTRAST = 'cache_update_diff_contrast';
 
 /**
  * 系统模块管理
@@ -43,10 +48,22 @@ class ModuleService extends Service
     protected $server;
 
     /**
+     * 指定更新的分支
+     * @var
+     */
+    protected $branch = 'rc';
+
+    /**
      * 官方应用版本
      * @var string
      */
     protected $version;
+
+    /**
+     * 仅尝试，不真正写入，测试用
+     * @var bool
+     */
+    protected $is_try = false;
 
     /**
      * 模块服务初始化
@@ -55,8 +72,6 @@ class ModuleService extends Service
     {
         $this->root = $this->app->getRootPath();
         $this->version = trim(Library::VERSION, 'v');
-        // $maxVersion = strstr($this->version, '.', true);
-        // $this->server = "https://v{$maxVersion}.thinkadmin.top";
     }
 
     /**
@@ -66,6 +81,27 @@ class ModuleService extends Service
     public function getVersion(): string
     {
         return $this->version;
+    }
+
+    /**
+     * @param bool $try
+     * @return $this
+     */
+    public function try(bool $try = true): ModuleService
+    {
+        $this->is_try = $try;
+        return $this;
+    }
+
+    /**
+     * 指定分支
+     * @param string $branch
+     * @return ModuleService
+     */
+    public function branch(string $branch): ModuleService
+    {
+        $this->branch = $branch;
+        return $this;
     }
 
     /**
@@ -100,9 +136,7 @@ class ModuleService extends Service
     {
         $data = $this->app->cache->get('moduleOnlineData', []);
         if (!empty($data)) return $data;
-
         $result = json_decode(HttpExtend::get($this->server . '/admin/api.update/version'), true);
-
         if (isset($result['code']) && $result['code'] > 0 && isset($result['data']) && is_array($result['data'])) {
             $this->app->cache->set('moduleOnlineData', $result['data'], 30);
             return $result['data'];
@@ -113,29 +147,28 @@ class ModuleService extends Service
 
     /**
      * 安装或更新模块
-     * @param string $name 模块名称
      * @return array
      */
-    public function install(string $name): array
-    {
-        $this->app->cache->set('moduleOnlineData', []);
-        $data = $this->grenerateDifference(['app' . '/' . $name]);
-        if (empty($data)) return [0, '没有需要安装的文件', []];
-        $lines = [];
-        foreach ($data as $file) {
-            [$state, $mode, $name] = $this->updateFileByDownload($file);
-            if ($state) {
-                if ($mode === 'add') $lines[] = "add {$name} successed";
-                if ($mode === 'mod') $lines[] = "modify {$name} successed";
-                if ($mode === 'del') $lines[] = "deleted {$name} successed";
-            } else {
-                if ($mode === 'add') $lines[] = "add {$name} failed";
-                if ($mode === 'mod') $lines[] = "modify {$name} failed";
-                if ($mode === 'del') $lines[] = "deleted {$name} failed";
-            }
-        }
-        return [1, '模块安装成功', $lines];
-    }
+//    public function install(): array
+//    {
+//        $this->app->cache->set('moduleOnlineData', []);
+//        $data = $this->grenerateDifference();
+//        if (empty($data)) return [0, '没有需要安装的文件', []];
+//        $lines = [];
+//        foreach ($data as $file) {
+//            [$state, $mode, $name] = $this->updateFileByDownload($file);
+//            if ($state) {
+//                if ($mode === 'add') $lines[] = "add $name successed";
+//                if ($mode === 'mod') $lines[] = "modify $name successed";
+//                if ($mode === 'del') $lines[] = "deleted $name successed";
+//            } else {
+//                if ($mode === 'add') $lines[] = "add $name failed";
+//                if ($mode === 'mod') $lines[] = "modify $name failed";
+//                if ($mode === 'del') $lines[] = "deleted $name failed";
+//            }
+//        }
+//        return [1, '模块安装成功', $lines];
+//    }
 
     /**
      * 获取系统模块信息
@@ -209,36 +242,51 @@ class ModuleService extends Service
 
     /**
      * 获取文件差异数据
-     * @param array $rules 查询规则
-     * @param array $ignore 忽略规则
-     * @param array $result 差异数据
      * @return array
      */
-    public function grenerateDifference(array $rules = [], array $ignore = [], array $result = []): array
+    public function grenerateDifference(): array
     {
-        // $online = json_decode(HttpExtend::post($this->server . '/api/update/node', [
-        //     'rules' => json_encode($rules), 'ignore' => json_encode($ignore),
-        // ]), true);
-        $online = Qcloud::newestFiles();
-        if (isset($online->error) && !empty($online->error)) return ['error' => $online->error];
+        $result = [];
+        /** 获取线上最新文件列表及缓存处理 */
+        $online = cache(CACHE_CLOUD_NEWST_FILES);
+        if (empty($online)) {
+            $online = Qcloud::newestFiles($this->branch);
+            Cache::tag('update_package')->clear();
+            Cache::tag('update_package')->set(CACHE_CLOUD_NEWST_FILES, $online, CACHE_CLOUD_UPDATE_TIME);
+        }
+
+        /** 线上数据是否错误 */
+        $is_error = isset($online->error) && !empty($online->error);
+        if ($is_error) return ['error' => $online->error];
+
+        /** 获取检查远程列表 */
         $remote = $online->getData();
-        if (isset($remote['list']) && count($remote['list']) > 1000) {
-            $local = $this->getChanges($remote['rules'] ?? [], $remote['ignore'] ?? []);
-            foreach ($this->_grenerateDifferenceContrast($remote['list'], $local['list']) as $file) {
-                if (in_array($file['type'], ['add', 'del', 'mod'])) foreach ($remote['rules'] as $rule) {
-                    if (stripos($file['name'], $rule) === 0) $result[] = $file;
-                }
-            }
-            return $result;
-        } else {
+        $check_remote_list = isset($remote['list']) && count($remote['list']) > 1000;
+        if ($check_remote_list === false) {
+            Cache::tag('update_package')->clear();
             return [];
         }
+
+        /** 获取文件差异列表并缓存 */
+        $contrast = cache(CACHE_UPDATE_DIFF_CONTRAST);
+        if (empty($contrast)) {
+            $local = $this->getChanges($remote['rules'] ?? [], $remote['ignore'] ?? []);
+            $contrast = $this->_grenerateDifferenceContrast($remote['list'], $local['list']);
+            Cache::tag('update_package')->set(CACHE_UPDATE_DIFF_CONTRAST, $contrast, CACHE_CLOUD_UPDATE_TIME);
+        }
+
+        foreach ($contrast as $file) {
+            if (in_array($file['type'], ['add', 'del', 'mod'])) foreach ($remote['rules'] as $rule) {
+                if (stripos($file['name'], $rule) === 0) $result[] = $file;
+            }
+        }
+        return $result;
     }
 
     /**
      * 尝试下载并更新文件
      * @param array $file 文件信息
-     * @return array
+     * @return array|void
      */
     public function updateFileByDownload(array $file): array
     {
@@ -247,10 +295,11 @@ class ModuleService extends Service
             if (isset($down['error'])) {
                 return [false, $file['type'], $file['name'], $down['error']];
             } else {
-                return [true, $file['type'], $file['name'], ''];
+                return [true, $file['type'], $file['name'], $down['message'] ?? ''];
             }
         } elseif (in_array($file['type'], ['del'])) {
             $real = $this->root . $file['name'];
+            if ($this->is_try) return [true, $file['type'], $file['name'], ''];
             if (is_file($real) && unlink($real)) {
                 $this->_removeEmptyDirectory(dirname($real));
                 return [true, $file['type'], $file['name'], ''];
@@ -259,20 +308,6 @@ class ModuleService extends Service
             }
         }
     }
-
-//    /**
-//     * 获取允许下载的规则
-//     * @return array
-//     */
-//    private function _getAllowDownloadRule(): array
-//    {
-//        $data = $this->app->cache->get('moduleAllowDownloadRule', []);
-//        if (is_array($data) && count($data) > 0) return $data;
-//        $data = ['const.php', 'version.php', 'app', 'think', 'config', 'extend', 'h5', 'route', 'stage', 'system', 'vendor', 'public'];
-//        foreach (array_keys($this->getModules()) as $name) $data[] = 'app/' . $name;
-//        $this->app->cache->set('moduleAllowDownloadRule', $data, 30);
-//        return $data;
-//    }
 
     /**
      * 获取模块版本信息
@@ -293,28 +328,24 @@ class ModuleService extends Service
     /**
      * 下载更新文件内容
      * @param string $encode
-     * @return boolean|integer
+     * @return array|false
      */
     private function _downloadUpdateFile(string $encode)
     {
-        // $source = $this->server . '/api/update/get?encode=' . $encode;
-        // $result = json_decode(HttpExtend::get($source), true);
-
-        $result = Qcloud::downRemoteFile($encode);
+        $result = Qcloud::downRemoteFile($encode, $this->branch);
         if (isset($result->error) && !empty($result->error)) return false;
-        $content = $result->getData()['content'];
         $filename = $this->root . decode($encode);
-        /**
-         * 文件夹不存在则创建
-         */
-        if (empty(file_exists(dirname($filename)))) {
-            mkdir(dirname($filename), 0755, true);
-            // chown(dirname($filename), env('app.osuser', 'www')); // 只设置最深的一层目录权限
+        if ($this->is_try === false) {
+            /** 文件夹不存在则创建 */
+            if (empty(file_exists(dirname($filename)))) mkdir(dirname($filename), 0755, true);
+            $writed = file_put_contents($filename, gzuncompress(base64_decode($result->getData()['content'])));
+            if (empty($writed)) {
+                return ['error' => '文件写入失败'];
+            } else {
+                return ['message' => number_format(($writed / 1024), 2) . 'kb'];
+            }
         }
-        $result = file_put_contents($filename, base64_decode($content));
-        // chown($filename, env('app.osuser', 'www'));  // 修改文件所有者，默认为www用户
-        chmod($filename, 0755); // 默认写入的文件为644权限，需要手动修改
-        return $result;
+        return [];
     }
 
     /**
@@ -364,11 +395,11 @@ class ModuleService extends Service
     /**
      * 获取目录文件列表
      * @param mixed $path 扫描目录
-     * @param array $data 扫描结果
      * @return array
      */
-    private function _scanLocalFileHashList(string $path, array $data = []): array
+    private function _scanLocalFileHashList(string $path): array
     {
+        $data = [];
         foreach (NodeService::instance()->scanDirectory($path, [], null) as $file) {
             if ($this->checkAllowDownload($name = substr($file, strlen($this->root)))) {
                 $data[] = ['name' => $name, 'hash' => md5(preg_replace('/\s+/', '', file_get_contents($file)))];

@@ -91,12 +91,16 @@ class SystemService extends Service
         if (empty($this->global) || empty($this->siteconf) || empty($this->data)) {
             // 公用配置部分
             $this->app->db->name($this->table)->where('site_id', 0)->cache($this->table)->select()->map(function ($item) {
-                $this->global[$item['type']][$item['name']] = $item['value'];
+                $conf = &$this->global[$item['type']];
+                $conf[$item['name']] = $item['value'];
+                $conf['is_global_config'] = 'true';
             });
             // 站点独立配置
             if (defined('SITE_ID') && SITE_ID > 0) {
                 $this->app->db->name($this->table)->where('site_id', SITE_ID)->cache($this->table . SITE_ID)->select()->map(function ($item) {
-                    $this->siteconf[$item['type']][$item['name']] = $item['value'];
+                    $conf = &$this->siteconf[$item['type']];
+                    $conf['is_global_config'] = 'false';
+                    $conf[$item['name']] = $item['value'];
                 });
             }
             $this->data = array_merge($this->global, $this->siteconf);
@@ -178,7 +182,9 @@ class SystemService extends Service
      */
     public function setData(string $name, $value)
     {
-        return $this->save('SystemData', ['site_id' => defined('SITE_ID') ? SITE_ID : 0, 'name' => $name, 'value' => serialize($value)], 'name');
+        $site_id = $this->getSiteId($name);
+        $this->app->cache->delete("SystemData-$site_id-$name");
+        return $this->save('SystemData', ['site_id' => $site_id, 'name' => $name, 'value' => serialize($value)], 'name');
     }
 
     /**
@@ -189,12 +195,29 @@ class SystemService extends Service
      */
     public function getData(string $name, $default = [])
     {
+        $site_id = $this->getSiteId($name);
         try {
-            $value = $this->app->db->name('SystemData')->where(['site_id' => defined('SITE_ID') ? SITE_ID : 0, 'name' => $name])->value('value', null);
+            $value = $this->app->db->name('SystemData')
+                ->cache("SystemData-$site_id-$name")
+                ->where(['site_id' => $site_id, 'name' => $name])
+                ->value('value') ?: null;
             return is_null($value) ? $default : unserialize($value);
         } catch (Exception $exception) {
             return $default;
         }
+    }
+
+    /**
+     * 识别 site_id
+     * @param $name
+     * @return int
+     */
+    public function getSiteId($name): int
+    {
+        $site_id = defined('SITE_ID') ? (int)SITE_ID : 0;
+        /** home配置只有管理中心有，特殊处理 */
+        if ($name === 'home') $site_id = 0;
+        return $site_id;
     }
 
     /**
@@ -218,10 +241,10 @@ class SystemService extends Service
     public function getOplog(string $action, string $content): array
     {
         return [
-            'node' => NodeService::instance()->getCurrent(),
-            'action' => $action, 'content' => $content,
-            'geoip' => $this->app->request->ip() ?: '127.0.0.1',
-            'username' => AdminService::instance()->getUserName() ?: '-',
+            'node'      => NodeService::instance()->getCurrent(),
+            'action'    => $action, 'content' => $content,
+            'geoip'     => $this->app->request->ip() ?: '127.0.0.1',
+            'username'  => AdminService::instance()->getUserName() ?: '-',
             'create_at' => time()
         ];
     }
@@ -324,7 +347,7 @@ class SystemService extends Service
         if (file_exists($filename)) $this->app->env->load($filename);
         $data = [
             // 'mode' => $this->app->env->get('RUNTIME_MODE') ?: 'debug',
-            'mode' => env('app_debug') ? 'debug' : 'product',
+            'mode'   => env('app_debug') ? 'debug' : 'product',
             'appmap' => $this->app->env->get('RUNTIME_APPMAP') ?: [],
             'domain' => $this->app->env->get('RUNTIME_DOMAIN') ?: [],
         ];

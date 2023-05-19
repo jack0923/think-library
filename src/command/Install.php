@@ -13,10 +13,13 @@ declare (strict_types=1);
 namespace think\admin\command;
 
 use think\admin\Command;
+use think\admin\service\AdminService;
 use think\admin\service\ModuleService;
+use think\admin\service\SystemService;
 use think\console\Input;
 use think\console\input\Argument;
 use think\console\Output;
+use think\facade\Cache;
 
 /**
  * 插件更新安装指令
@@ -50,11 +53,14 @@ class Install extends Command
      */
     protected $bind = [
         'base' => [
-            'rules' => ['const.php', 'version', 'app', 'config', 'extend', 'h5', 'public', 'route', 'stage', 'system', 'vendor'],
+            'rules'  => ['const.php', 'version', 'app', 'config', 'extend', 'h5', 'public', 'route', 'stage', 'system', 'vendor'],
             'ignore' => []
         ]
     ];
 
+    /**
+     * 配置命令
+     */
     protected function configure()
     {
         $this->setName('xadmin:install');
@@ -62,80 +68,76 @@ class Install extends Command
         $this->setDescription("Source code Install and Update for ThinkAdmin");
     }
 
-    protected function execute(Input $input, Output $output)
+    /**
+     * 执行更新操作
+     * @param Input $input
+     * @param Output $output
+     * @return bool
+     */
+    protected function execute(Input $input, Output $output): bool
     {
-
-        if ($this->installFile(true) !== true) {
+        if ($this->installFile() !== true) {
             $this->output->writeln("更新文件出错，请联系开发人员");
             return false;
         }
-
         $this->output->writeln("更新数据库内容");
         if ($this->installData() !== true) {
             $this->output->writeln("更新数据库出错，请联系开发人员");
             return false;
         }
-
-        $this->installSuccess();
-
-//        $this->name = trim($input->getArgument('name'));
-//        if (empty($this->name)) {
-//            $this->output->writeln('Module name of online installation cannot be empty');
-//        } elseif ($this->name === 'all') {
-//            foreach ($this->bind as $bind) {
-//                $this->rules = array_merge($this->rules, $bind['rules']);
-//                $this->ignore = array_merge($this->ignore, $bind['ignore']);
-//            }
-//            [$this->installFile(true), $this->installData()];
-//        } elseif (isset($this->bind[$this->name])) {
-//            $this->rules = $this->bind[$this->name]['rules'] ?? [];
-//            $this->ignore = $this->bind[$this->name]['ignore'] ?? [];
-//            [$this->installFile(true), $this->installData()];
-//        } else {
-//            $this->output->writeln("The specified module {$this->name} is not configured with installation rules");
-//        }
+        return $this->installSuccess();
     }
 
     /**
      * @title 写入文件
-     * @param bool $write
+     * @return bool
      */
-    private function installFile($write = true)
+    private function installFile(): bool
     {
-        $module = ModuleService::instance();
+        $module = ModuleService::instance()->try(false);
+        $update_to_beta = $this->queue->data['update_to_beta'] ?? 0;
+        $module->branch($update_to_beta ? 'beta' : 'rc');
         $data = $module->grenerateDifference();
         if (empty($data)) {
             $this->output->writeln('没有需要更新的文件');
         } else {
             [$total, $used] = [count($data), 0];
             foreach ($data as $file) {
-                if ($write) {
-                    [$state, $mode, $name, $error] = $module->updateFileByDownload($file);
-                    if ($state) {
-                        if ($mode === 'add') $this->queue->message($total, ++$used, "--- {$name} 新增 成功");
-                        if ($mode === 'mod') $this->queue->message($total, ++$used, "--- {$name} 更新 成功");
-                        if ($mode === 'del') $this->queue->message($total, ++$used, "--- {$name} 删除 成功");
-                    } else {
-                        if ($mode === 'add') $this->queue->message($total, ++$used, "--- {$name} 新增 失败 {$error}");
-                        if ($mode === 'mod') $this->queue->message($total, ++$used, "--- {$name} 更新 失败 {$error}");
-                        if ($mode === 'del') $this->queue->message($total, ++$used, "--- {$name} 删除 失败 {$error}");
-                    }
+                [$state, $mode, $name, $message] = $module->updateFileByDownload($file);
+                if ($state) {
+                    if ($mode === 'add') $this->queue->message($total, ++$used, "--- 新增 $message");
+                    if ($mode === 'mod') $this->queue->message($total, ++$used, "--- 更新 $message");
+                    if ($mode === 'del') $this->queue->message($total, ++$used, "--- 删除 $message");
                 } else {
-                    $this->queue->message($total, ++$used, "--- {$file['name']} --- {$file['type']}");
+                    if ($mode === 'add') $this->queue->message($total, ++$used, "--- $name 新增 失败 $message");
+                    if ($mode === 'mod') $this->queue->message($total, ++$used, "--- $name 更新 失败 $message");
+                    if ($mode === 'del') $this->queue->message($total, ++$used, "--- $name 删除 失败 $message");
                 }
             }
         }
         return true;
     }
 
+    /**
+     * 更新数据库文件
+     * @return mixed
+     */
     protected function installData()
     {
         return include ROOT_PATH . DIRECTORY_SEPARATOR . 'update.php';
     }
 
-    protected function installSuccess()
+    /**
+     * 安装成功后处理
+     */
+    protected function installSuccess(): bool
     {
+        AdminService::instance()->clearCache();
+        SystemService::instance()->clearRuntime();
+        Cache::tag('update_package')->clear();
+        $this->output->writeln("清除缓存");
         unlink(VERSION_FILE);
+        return true;
     }
 
 }

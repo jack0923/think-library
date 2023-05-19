@@ -17,28 +17,30 @@ declare (strict_types=1);
 
 namespace think\admin;
 
-use think\admin\helper\DeleteHelper;
+use cloud\Response;
+use stdClass;
+use think\App;
+use think\db\Query;
+use think\Request;
 use think\admin\helper\FormHelper;
 use think\admin\helper\PageHelper;
 use think\admin\helper\QueryHelper;
 use think\admin\helper\SaveHelper;
 use think\admin\helper\TokenHelper;
-use think\admin\helper\ValidateHelper;
-use think\admin\service\QueueService;
-use think\App;
-use think\db\exception\DataNotFoundException;
 use think\db\exception\DbException;
-use think\db\exception\ModelNotFoundException;
-use think\db\Query;
+use think\admin\helper\DeleteHelper;
+use think\admin\service\QueueService;
+use think\admin\helper\ValidateHelper;
 use think\exception\HttpResponseException;
-use think\Request;
+use think\db\exception\DataNotFoundException;
+use think\db\exception\ModelNotFoundException;
 
 /**
  * 标准控制器基类
  * Class Controller
  * @package think\admin
  */
-abstract class Controller extends \stdClass
+abstract class Controller extends stdClass
 {
 
     /**
@@ -100,9 +102,9 @@ abstract class Controller extends \stdClass
      * @param mixed $data 返回数据
      * @param integer $code 返回代码
      */
-    public function error($info, $data = '{-null-}', $code = 0): void
+    public function error($info, $data = '{-null-}', int $code = 0): void
     {
-        if ($data === '{-null-}') $data = new \stdClass();
+        if ($data === '{-null-}') $data = new stdClass();
         throw new HttpResponseException(json([
             'code' => $code, 'message' => $info, 'data' => $data,
         ]));
@@ -113,16 +115,30 @@ abstract class Controller extends \stdClass
      * @param mixed $info 消息内容
      * @param mixed $data 返回数据
      * @param integer $code 返回代码
+     * @param string|array $redirect
      */
-    public function success($info, $data = '{-null-}', $code = 20000): void
+    public function success($info, $data = '{-null-}', int $code = 20000, $redirect = ''): void
     {
+        if ($info instanceof Response) {
+            $code = $info->getRet() === 200 ? 20000 : $info->getRet();
+            throw new HttpResponseException(json([
+                'code' => $code, 'message' => $info->getMsg(), 'data' => $info->getData(),
+            ]));
+        }
         if ($this->csrf_state) {
             TokenHelper::instance()->clear();
         }
-        if ($data === '{-null-}') $data = new \stdClass();
-        throw new HttpResponseException(json([
-            'code' => $code, 'message' => $info, 'data' => $data,
-        ]));
+        if ($data === '{-null-}') $data = new stdClass();
+        throw new HttpResponseException(json(['code' => $code, 'message' => $info, 'data' => $data, 'redirect' => $redirect]));
+    }
+
+    /**
+     * 返回交互事件的操作
+     * @param array $uevent
+     */
+    public function uevent(array $uevent = [])
+    {
+        http_event('', '', $uevent);
     }
 
     /**
@@ -130,7 +146,7 @@ abstract class Controller extends \stdClass
      * @param string $url 跳转链接
      * @param integer $code 跳转代码
      */
-    public function redirect(string $url, $code = 301): void
+    public function redirect(string $url, int $code = 301): void
     {
         throw new HttpResponseException(redirect($url, $code));
     }
@@ -157,7 +173,7 @@ abstract class Controller extends \stdClass
      * @param mixed $value 变量的值
      * @return $this
      */
-    public function assign($name, $value = '')
+    public function assign($name, $value = ''): Controller
     {
         if (is_string($name)) {
             $this->$name = $value;
@@ -179,7 +195,7 @@ abstract class Controller extends \stdClass
     public function callback(string $name, &$one = [], &$two = []): bool
     {
         if (is_callable($name)) return call_user_func($name, $this, $one, $two);
-        foreach (["_{$this->app->request->action()}{$name}", $name] as $method) {
+        foreach (["_{$this->app->request->action()}$name", $name] as $method) {
             if (method_exists($this, $method) && false === $this->$method($one, $two)) {
                 return false;
             }
@@ -211,7 +227,7 @@ abstract class Controller extends \stdClass
      * @throws DbException
      * @throws ModelNotFoundException
      */
-    protected function _page($dbQuery, bool $page = true, bool $display = true, $total = false, int $limit = 0, string $template = '')
+    protected function _page($dbQuery, bool $page = true, bool $display = true, $total = false, int $limit = 0, string $template = ''): array
     {
         return PageHelper::instance()->init($dbQuery, $page, $display, $total, $limit, $template);
     }
@@ -239,7 +255,7 @@ abstract class Controller extends \stdClass
      * @param string|array $type 输入方式 ( post. 或 get. )
      * @return array
      */
-    protected function _vali(array $rules, $type = '')
+    protected function _vali(array $rules, $type = ''): array
     {
         return ValidateHelper::instance()->init($rules, $type);
     }
@@ -253,7 +269,7 @@ abstract class Controller extends \stdClass
      * @return boolean
      * @throws DbException
      */
-    protected function _save($dbQuery, array $data = [], string $field = '', array $where = [])
+    protected function _save($dbQuery, array $data = [], string $field = '', array $where = []): bool
     {
         return SaveHelper::instance()->init($dbQuery, $data, $field, $where);
     }
@@ -264,11 +280,15 @@ abstract class Controller extends \stdClass
      * @param string $field 数据对象主键
      * @param array $where 额外更新条件
      * @return boolean|null
-     * @throws DbException
      */
-    protected function _delete($dbQuery, string $field = '', array $where = [])
+    protected function _delete($dbQuery, string $field = '', array $where = []): ?bool
     {
-        return DeleteHelper::instance()->init($dbQuery, $field, $where);
+        try {
+            return DeleteHelper::instance()->init($dbQuery, $field, $where);
+        } catch (DbException $e) {
+            http_error($e->getMessage());
+            return null;
+        }
     }
 
     /**
@@ -276,7 +296,7 @@ abstract class Controller extends \stdClass
      * @param boolean $return 是否返回结果
      * @return boolean
      */
-    protected function _applyFormToken(bool $return = false)
+    protected function _applyFormToken(bool $return = false): bool
     {
         return TokenHelper::instance()->init($return);
     }

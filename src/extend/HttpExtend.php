@@ -60,7 +60,7 @@ class HttpExtend
      * @param boolean $returnHeader 是否返回头部信息
      * @return boolean|string
      */
-    public static function submit(string $url, array $data = [], array $file = [], array $header = [], string $method = 'POST', bool $returnHeader = true)
+    public static function submit(string $url, array $data = [], array $file = [], array $header = [], string $method = 'POST', bool $returnHeader = true, int $timeout = 300)
     {
         [$line, $boundary] = [[], CodeExtend::random(18)];
         foreach ($data as $key => $value) {
@@ -77,7 +77,7 @@ class HttpExtend
         }
         $line[] = "--{$boundary}--";
         $header[] = "Content-type:multipart/form-data;boundary={$boundary}";
-        return static::request($method, $url, ['data' => join("\r\n", $line), 'returnHeader' => $returnHeader, 'headers' => $header]);
+        return static::request($method, $url, ['data' => join("\r\n", $line), 'returnHeader' => $returnHeader, 'headers' => $header, 'timeout' => $timeout]);
     }
 
     /**

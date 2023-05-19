@@ -145,18 +145,18 @@ class QueueService extends Service
         }
         $this->code = CodeExtend::uniqidDate(16, 'Q');
         $this->app->db->name('SystemQueue')->strict(false)->failException(true)->insert([
-            'site_id' => $site_id,
-            'code' => $this->code,
-            'title' => $title,
-            'command' => $command,
-            'attempts' => 0,
-            'rscript' => intval(boolval($rscript)),
-            'exec_data' => json_encode($data, JSON_UNESCAPED_UNICODE),
-            'exec_time' => $later > 0 ? time() + $later : time(),
+            'site_id'    => $site_id,
+            'code'       => $this->code,
+            'title'      => $title,
+            'command'    => $command,
+            'attempts'   => 0,
+            'rscript'    => intval(boolval($rscript)),
+            'exec_data'  => json_encode($data, JSON_UNESCAPED_UNICODE),
+            'exec_time'  => $later > 0 ? time() + $later : time(),
             'enter_time' => 0,
             'outer_time' => 0,
             'loops_time' => $loops,
-            'create_at' => time()
+            'create_at'  => time()
         ]);
         $this->progress(1, '>>> 任务创建成功 <<<', 0.00);
         return $this->initialize($this->code);
@@ -260,6 +260,27 @@ class QueueService extends Service
      */
     public function execute(array $data = [])
     {
+    }
+
+    /**
+     * 记录执行时间到文件，后台用于检查其启动状态
+     */
+    public static function writeStatusTime()
+    {
+        $statusfile = app()->getRootPath() . '/queue';
+        file_put_contents($statusfile, time());
+    }
+
+    /**
+     * 检查后台服务是否启动
+     * @return bool
+     */
+    public static function checkListenStatus(): bool
+    {
+        $statusfile = app()->getRootPath() . '/queue';
+        if (file_exists($statusfile) === false) return false;
+        $time = (int)file_get_contents($statusfile);
+        return $time + 2 > time();
     }
 
 }

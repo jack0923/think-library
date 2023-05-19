@@ -20,6 +20,9 @@ namespace think\admin;
 use think\admin\storage\LocalStorage;
 use think\App;
 use think\Container;
+use think\db\exception\DataNotFoundException;
+use think\db\exception\DbException;
+use think\db\exception\ModelNotFoundException;
 
 /**
  * 文件存储引擎管理
@@ -63,9 +66,9 @@ abstract class Storage
     /**
      * Storage constructor.
      * @param App $app
-     * @throws \think\db\exception\DataNotFoundException
-     * @throws \think\db\exception\DbException
-     * @throws \think\db\exception\ModelNotFoundException
+     * @throws DataNotFoundException
+     * @throws DbException
+     * @throws ModelNotFoundException
      */
     public function __construct(App $app)
     {
@@ -85,16 +88,16 @@ abstract class Storage
      * @param array $arguments 调用参数
      * @return mixed
      * @throws Exception
-     * @throws \think\db\exception\DataNotFoundException
-     * @throws \think\db\exception\DbException
-     * @throws \think\db\exception\ModelNotFoundException
+     * @throws DataNotFoundException
+     * @throws DbException
+     * @throws ModelNotFoundException
      */
     public static function __callStatic(string $method, array $arguments)
     {
         if (method_exists($class = static::instance(), $method)) {
             return call_user_func_array([$class, $method], $arguments);
         } else {
-            throw new Exception("method not exists: " . get_class($class) . "->{$method}()");
+            throw new Exception("method not exists: " . get_class($class) . "->$method()");
         }
     }
 
@@ -103,9 +106,9 @@ abstract class Storage
      * @param null|string $name 驱动名称
      * @return static
      * @throws Exception
-     * @throws \think\db\exception\DataNotFoundException
-     * @throws \think\db\exception\DbException
-     * @throws \think\db\exception\ModelNotFoundException
+     * @throws DataNotFoundException
+     * @throws DbException
+     * @throws ModelNotFoundException
      */
     public static function instance(?string $name = null)
     {
@@ -119,15 +122,12 @@ abstract class Storage
 
     /**
      * 获取当前存储的URL前缀
-     * @return mixed|string
-     * @throws \think\db\exception\DataNotFoundException
-     * @throws \think\db\exception\DbException
-     * @throws \think\db\exception\ModelNotFoundException
+     * @return string
      */
-    public static function prefix()
+    public static function prefix(): string
     {
         $storageType = conf('storage.type');
-        if($storageType === 'local'){
+        if ($storageType === 'local') {
             return BASE_URL . 'attachment/';
         }
         return conf("storage.{$storageType}_url") . '/';
@@ -211,7 +211,8 @@ abstract class Storage
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-        [$content] = [curl_exec($ch), curl_close($ch)];
+        $content = curl_exec($ch);
+        curl_close($ch);
         return $content ?: '';
     }
 

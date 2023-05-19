@@ -93,7 +93,9 @@ class TxcosStorage extends Storage
         }
         $data['success_action_status'] = '200';
         $file = ['field' => 'file', 'name' => $name, 'content' => $file];
-        if (is_numeric(stripos(HttpExtend::submit($this->upload(), $data, $file), '200 OK'))) {
+        $result = HttpExtend::submit($this->upload(), $data, $file);
+        if ($result === false) http_error('上传到远程附件错误，可能是因为超时');
+        if (is_numeric(stripos($result, '200 OK'))) {
             return ['file' => $this->path($name, $safe), 'url' => $this->url($name, $safe, $attname), 'key' => $name];
         } else {
             return [];

@@ -115,11 +115,15 @@ class Library extends Service
         }
         // 动态加载应用初始化系统函数
         [$ds, $base] = [DIRECTORY_SEPARATOR, $this->app->getBasePath()];
-        foreach (glob("$base*{$ds}sys.php") as $file) includeFile($file);
+        foreach (glob("$base*{$ds}sys.php") as $file) {
+            include $file;
+        }
         // 动态加载插件初始化系统函数
         $base = "{$this->app->getBasePath()}addons$ds";
         if (file_exists($base) && is_dir($base)) {
-            foreach (glob("$base*{$ds}sys.php") as $file) includeFile($file);
+            foreach (glob("$base*{$ds}sys.php") as $file) {
+                include $file;
+            };
         }
     }
 }
